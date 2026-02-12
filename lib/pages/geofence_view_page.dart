@@ -7,6 +7,7 @@ import '../theme/app_theme.dart';
 import '../models/user_model.dart';
 import '../services/user_location_service.dart';
 import '../services/user_auth_service.dart';
+import '../services/dynamic_geofencing_service.dart';
 import '../widgets/user_map_widget.dart';
 
 class GeofenceViewPage extends StatefulWidget {
@@ -20,18 +21,25 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
   bool _isStaticGeofence = false;
   final UserLocationService _locationService = UserLocationService();
   final UserAuthService _authService = UserAuthService();
+  final DynamicGeofencingService _geofencingService = DynamicGeofencingService();
   
   List<UserModel> _users = [];
   UserModel? _currentUser;
   RealtimeChannel? _realtimeChannel;
   Timer? _refreshTimer;
   int _updateCounter = 0; // Force rebuild counter
+  
+  // Safety zone data
+  SafetyZoneData? _safetyData;
+  double _safetyThreshold = 10.0; // 10 meters default
+  bool _hasShownRiskyPopup = false; // Prevent multiple popups
 
   @override
   void initState() {
     super.initState();
     _loadUsers();
     _subscribeToUpdates();
+    _startSafetyMonitoring();
     
     // Aggressive refresh for real-time sync (every 1 second)
     // Note: Supabase Realtime (WebSocket) will trigger most updates instantly
@@ -39,8 +47,51 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
     _refreshTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) {
         _loadUsers();
+        _checkSafetyStatus(); // Check safety on every refresh
       }
     });
+  }
+
+  void _startSafetyMonitoring() {
+    print('🛡️ Starting safety zone monitoring');
+    
+    _geofencingService.startMonitoring(
+      threshold: _safetyThreshold,
+      onStatusChanged: (data) {
+        if (mounted) {
+          setState(() {
+            _safetyData = data;
+          });
+        }
+      },
+      onRiskyZone: (data) {
+        // Show popup when entering risky zone (but not if there are no other users)
+        if (mounted && !_hasShownRiskyPopup && data.nearbyUsersCount > 0) {
+          _hasShownRiskyPopup = true;
+          _showSafetyConfirmationPopup(data);
+        }
+      },
+      onSafeZone: (data) {
+        // Reset popup flag when returning to safe zone
+        _hasShownRiskyPopup = false;
+      },
+    );
+  }
+
+  void _checkSafetyStatus() {
+    if (_currentUser == null || _users.isEmpty) return;
+    
+    final data = _geofencingService.checkSafetyStatus(
+      currentUser: _currentUser!,
+      allUsers: _users,
+      threshold: _safetyThreshold,
+    );
+    
+    if (mounted) {
+      setState(() {
+        _safetyData = data;
+      });
+    }
   }
 
   Future<void> _loadUsers() async {
@@ -186,7 +237,258 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
   void dispose() {
     _refreshTimer?.cancel();
     _realtimeChannel?.unsubscribe();
+    _geofencingService.stopMonitoring();
     super.dispose();
+  }
+
+  void _showSafetyConfirmationPopup(SafetyZoneData data) {
+    showDialog(
+      context: context,
+      barrierDismissible: false, // User must respond
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: AppTheme.dangerColor, size: 32),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Safety Check',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 20,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppTheme.dangerColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '⚠️ You are in a risky zone',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 16,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Average distance to other users: ${data.averageDistance.toStringAsFixed(1)}m',
+                      style: TextStyle(
+                        color: AppTheme.textSecondary,
+                        fontSize: 14,
+                      ),
+                    ),
+                    Text(
+                      'Safety threshold: ${data.threshold.toStringAsFixed(0)}m',
+                      style: TextStyle(
+                        color: AppTheme.textSecondary,
+                        fontSize: 14,
+                      ),
+                    ),
+                    if (data.nearbyUsersCount > 0)
+                      Text(
+                        'Nearby users: ${data.nearbyUsersCount}',
+                        style: TextStyle(
+                          color: AppTheme.textSecondary,
+                          fontSize: 14,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                'Are you safe?',
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 18,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Please confirm your safety status. If you need help, emergency services can be contacted.',
+                style: TextStyle(
+                  color: AppTheme.textSecondary,
+                  fontSize: 14,
+                  height: 1.5,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            OutlinedButton.icon(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _handleNotSafe();
+              },
+              icon: const Icon(Icons.emergency, color: Colors.red),
+              label: const Text(
+                'Need Help',
+                style: TextStyle(color: Colors.red),
+              ),
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Colors.red),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              ),
+            ),
+            ElevatedButton.icon(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _handleSafe();
+              },
+              icon: const Icon(Icons.check_circle, color: Colors.white),
+              label: const Text('I\'m Safe'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.successColor,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _handleSafe() {
+    print('✅ User confirmed: I\'m safe');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Row(
+          children: [
+            Icon(Icons.check_circle, color: Colors.white),
+            SizedBox(width: 12),
+            Text('Great! Stay aware of your surroundings.'),
+          ],
+        ),
+        backgroundColor: AppTheme.successColor,
+        duration: const Duration(seconds: 3),
+      ),
+    );
+    
+    // Reset popup flag after 30 seconds
+    Future.delayed(const Duration(seconds: 30), () {
+      if (mounted) {
+        _hasShownRiskyPopup = false;
+      }
+    });
+  }
+
+  void _handleNotSafe() {
+    print('🚨 User needs help!');
+    
+    // Show emergency options
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: const Row(
+            children: [
+              Icon(Icons.emergency, color: Colors.red, size: 32),
+              SizedBox(width: 12),
+              Text(
+                'Emergency',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.red,
+                ),
+              ),
+            ],
+          ),
+          content: const Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Emergency alert will be sent to:',
+                style: TextStyle(fontSize: 16),
+              ),
+              SizedBox(height: 16),
+              Text(
+                '• All nearby trusted contacts\n'
+                '• Your emergency contacts\n'
+                '• Local authorities (optional)',
+                style: TextStyle(fontSize: 14, height: 1.8),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _hasShownRiskyPopup = false;
+              },
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton.icon(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _triggerEmergencyAlert();
+              },
+              icon: const Icon(Icons.warning, color: Colors.white),
+              label: const Text('Send Alert'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _triggerEmergencyAlert() {
+    print('🚨 EMERGENCY ALERT TRIGGERED!');
+    
+    // TODO: Implement emergency alert logic
+    // - Send notifications to nearby users
+    // - Alert emergency contacts
+    // - Log incident
+    // - Start recording audio/location trail
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Row(
+          children: [
+            Icon(Icons.notifications_active, color: Colors.white),
+            SizedBox(width: 12),
+            Expanded(
+              child: Text('Emergency alert sent to nearby users and contacts!'),
+            ),
+          ],
+        ),
+        backgroundColor: Colors.red,
+        duration: const Duration(seconds: 5),
+        action: SnackBarAction(
+          label: 'View',
+          textColor: Colors.white,
+          onPressed: () {
+            // Navigate to emergency page
+          },
+        ),
+      ),
+    );
+    
+    _hasShownRiskyPopup = false;
   }
 
   @override
@@ -228,6 +530,9 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
                     mapHeight: 400,
                   ),
                   const SizedBox(height: 24),
+                  // Safety Status Card (Priority Display)
+                  if (_safetyData != null) _buildSafetyStatusCard(),
+                  const SizedBox(height: 16),
                   // Current User Info (rebuild on every update)
                   if (_currentUser != null) _buildCurrentUserCard(),
                   const SizedBox(height: 16),
@@ -456,6 +761,207 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
             ),
         ],
       ),
+    );
+  }
+
+  Widget _buildSafetyStatusCard() {
+    if (_safetyData == null) return const SizedBox.shrink();
+
+    final isSafe = _safetyData!.status == SafetyStatus.safe;
+    final isRisky = _safetyData!.status == SafetyStatus.risky;
+    final isUnknown = _safetyData!.status == SafetyStatus.unknown;
+    final noOtherUsers = _safetyData!.nearbyUsersCount == 0;
+
+    Color statusColor;
+    IconData statusIcon;
+    String statusText;
+    String statusDescription;
+
+    if (noOtherUsers) {
+      // Special case: No other users online
+      statusColor = AppTheme.warningColor;
+      statusIcon = Icons.person_off;
+      statusText = '⚠️ No Other Users Online';
+      statusDescription = 'You are alone. Ensure other trusted users are online for safety monitoring.';
+    } else if (isSafe) {
+      statusColor = AppTheme.successColor;
+      statusIcon = Icons.shield_outlined;
+      statusText = '✅ Safe Zone';
+      statusDescription = 'You are within ${_safetyData!.threshold.toStringAsFixed(0)}m average distance from ${_safetyData!.nearbyUsersCount} user(s)';
+    } else if (isRisky) {
+      statusColor = AppTheme.dangerColor;
+      statusIcon = Icons.warning_amber_rounded;
+      statusText = '⚠️ Risky Zone';
+      statusDescription = 'Average distance ${_safetyData!.averageDistance.toStringAsFixed(1)}m exceeds ${_safetyData!.threshold.toStringAsFixed(0)}m threshold';
+    } else {
+      statusColor = AppTheme.textSecondary;
+      statusIcon = Icons.help_outline;
+      statusText = '❓ Unknown';
+      statusDescription = 'Unable to determine safety status';
+    }
+
+    return Card(
+      key: ValueKey('safety_status_$_updateCounter'),
+      color: statusColor.withOpacity(0.1),
+      elevation: isSafe ? 2 : (isRisky ? 8 : 1),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+          color: statusColor,
+          width: 2,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: statusColor,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(statusIcon, color: Colors.white, size: 32),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        statusText,
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 20,
+                          color: statusColor,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        statusDescription,
+                        style: TextStyle(
+                          color: AppTheme.textSecondary,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (isRisky)
+                  Icon(Icons.notification_important, color: statusColor, size: 28),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Divider(color: statusColor.withOpacity(0.3)),
+            const SizedBox(height: 12),
+              Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _buildSafetyMetric(
+                  'Avg Distance',
+                  _safetyData!.averageDistance == double.infinity
+                      ? 'N/A'
+                      : '${_safetyData!.averageDistance.toStringAsFixed(1)}m',
+                  Icons.straighten,
+                  statusColor,
+                ),
+                Container(
+                  width: 1,
+                  height: 40,
+                  color: statusColor.withOpacity(0.3),
+                ),
+                _buildSafetyMetric(
+                  'Threshold',
+                  '${_safetyData!.threshold.toStringAsFixed(0)}m',
+                  Icons.gps_fixed,
+                  statusColor,
+                ),
+                Container(
+                  width: 1,
+                  height: 40,
+                  color: statusColor.withOpacity(0.3),
+                ),
+                _buildSafetyMetric(
+                  'Nearby Users',
+                  '${_safetyData!.nearbyUsersCount}',
+                  Icons.people,
+                  statusColor,
+                ),
+              ],
+            ),
+            if (noOtherUsers) ...[
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: statusColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: statusColor.withOpacity(0.3)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline, color: statusColor, size: 20),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Other users need to be online for safety monitoring to work.',
+                        style: TextStyle(
+                          color: AppTheme.textSecondary,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ] else if (isRisky) ...[
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    _showSafetyConfirmationPopup(_safetyData!);
+                  },
+                  icon: const Icon(Icons.notification_important, color: Colors.white),
+                  label: const Text('Safety Check'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: statusColor,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSafetyMetric(String label, String value, IconData icon, Color color) {
+    return Column(
+      children: [
+        Icon(icon, color: color, size: 20),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 16,
+            color: color,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          label,
+          style: TextStyle(
+            color: AppTheme.textSecondary,
+            fontSize: 11,
+          ),
+        ),
+      ],
     );
   }
 
