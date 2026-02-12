@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
+import '../services/user_auth_service.dart';
+import '../config/supabase_config.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -76,20 +78,16 @@ class _LoginPageState extends State<LoginPage> {
                 keyboardType: _isPhoneLogin ? TextInputType.phone : TextInputType.emailAddress,
                 decoration: InputDecoration(
                   labelText: _isPhoneLogin ? 'Phone Number' : 'Email Address',
-                  hintText: _isPhoneLogin ? '+91 9876543210' : 'your@email.com',
+                  hintText: _isPhoneLogin ? '+911234567890' : 'user1@gmail.com',
                   prefixIcon: Icon(_isPhoneLogin ? Icons.phone : Icons.email),
                 ),
+                onSubmitted: (_) => _handleLogin(),
               ),
               const SizedBox(height: 16),
-              // OTP Button
+              // Continue/Login Button
               ElevatedButton(
-                onPressed: () {
-                  // Navigate to home after login
-                  if (_phoneController.text.isNotEmpty || _emailController.text.isNotEmpty) {
-                    context.go('/home');
-                  }
-                },
-                child: const Text('Send OTP'),
+                onPressed: _handleLogin,
+                child: const Text('Continue'),
               ),
               const SizedBox(height: 24),
               // Emergency Disclaimer
@@ -130,20 +128,70 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
-              // Continue Button
-              OutlinedButton.icon(
-                onPressed: () {
-                  context.go('/home');
-                },
-                icon: const Icon(Icons.arrow_forward),
-                label: const Text('Continue'),
-              ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  Future<void> _handleLogin() async {
+    final input = _isPhoneLogin ? _phoneController.text.trim() : _emailController.text.trim();
+    
+    if (input.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Please enter ${_isPhoneLogin ? "phone number" : "email address"}'),
+        ),
+      );
+      return;
+    }
+
+    if (!SupabaseConfig.isConfigured) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please configure Supabase credentials first'),
+        ),
+      );
+      return;
+    }
+
+    // Show loading
+    if (!context.mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(
+        child: CircularProgressIndicator(),
+      ),
+    );
+
+    // Login user
+    final authService = UserAuthService();
+    final user = await authService.loginUser(
+      phone: _isPhoneLogin ? input : null,
+      email: _isPhoneLogin ? null : input,
+    );
+
+    if (!context.mounted) return;
+    Navigator.pop(context); // Close loading dialog
+    
+    if (user != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Welcome, ${user.name}!'),
+          backgroundColor: AppTheme.successColor,
+        ),
+      );
+      context.go('/home');
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Login failed. Please check your email/phone and try again.'),
+          backgroundColor: AppTheme.dangerColor,
+        ),
+      );
+    }
   }
 
   Widget _buildToggleButton(String label, bool isSelected) {
