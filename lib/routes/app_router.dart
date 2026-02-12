@@ -18,6 +18,13 @@ import '../widgets/main_scaffold.dart';
 
 final GoRouter appRouter = GoRouter(
   initialLocation: '/splash',
+  redirect: (context, state) {
+    // Ensure root path redirects to splash
+    if (state.uri.path == '/') {
+      return '/splash';
+    }
+    return null;
+  },
   routes: [
     GoRoute(
       path: '/splash',

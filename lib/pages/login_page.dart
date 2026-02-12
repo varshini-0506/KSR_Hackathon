@@ -131,13 +131,13 @@ class _LoginPageState extends State<LoginPage> {
                 ),
               ),
               const SizedBox(height: 16),
-              // Guardian Option
+              // Continue Button
               OutlinedButton.icon(
                 onPressed: () {
-                  context.go('/guardian-view');
+                  context.go('/home');
                 },
-                icon: const Icon(Icons.people_outline),
-                label: const Text('Continue as Guardian'),
+                icon: const Icon(Icons.arrow_forward),
+                label: const Text('Continue'),
               ),
             ],
           ),
