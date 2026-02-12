@@ -32,7 +32,9 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
   // Safety zone data
   SafetyZoneData? _safetyData;
   double _safetyThreshold = 10.0; // 10 meters default
-  bool _hasShownRiskyPopup = false; // Prevent multiple popups
+  SafetyStatus _lastSafetyStatus = SafetyStatus.unknown; // Track state changes
+  Timer? _riskyZoneTimer; // Timer for recurring checks in risky zone
+  DateTime? _lastRiskyPopupTime; // Track when popup was last shown
 
   @override
   void initState() {
@@ -59,23 +61,62 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
       threshold: _safetyThreshold,
       onStatusChanged: (data) {
         if (mounted) {
+          final previousStatus = _lastSafetyStatus;
+          final currentStatus = data.status;
+          
           setState(() {
             _safetyData = data;
+            _lastSafetyStatus = currentStatus;
           });
+          
+          // Handle state transitions
+          if (previousStatus != currentStatus) {
+            print('🔄 Safety status changed: $previousStatus → $currentStatus');
+            
+            if (currentStatus == SafetyStatus.risky && data.nearbyUsersCount > 0) {
+              // Entered risky zone - show popup immediately
+              _showSafetyConfirmationPopup(data);
+              _startRiskyZoneRecurringCheck();
+            } else if (currentStatus == SafetyStatus.safe) {
+              // Entered safe zone - stop recurring checks
+              _stopRiskyZoneRecurringCheck();
+            }
+          }
         }
       },
       onRiskyZone: (data) {
-        // Show popup when entering risky zone (but not if there are no other users)
-        if (mounted && !_hasShownRiskyPopup && data.nearbyUsersCount > 0) {
-          _hasShownRiskyPopup = true;
-          _showSafetyConfirmationPopup(data);
-        }
+        // This is triggered by the service, but we handle it in onStatusChanged
+        print('⚠️ Risky zone callback triggered');
       },
       onSafeZone: (data) {
-        // Reset popup flag when returning to safe zone
-        _hasShownRiskyPopup = false;
+        // This is triggered by the service, but we handle it in onStatusChanged
+        print('✅ Safe zone callback triggered');
       },
     );
+  }
+
+  void _startRiskyZoneRecurringCheck() {
+    print('⏰ Starting 5-minute recurring safety check timer');
+    _stopRiskyZoneRecurringCheck(); // Clear any existing timer
+    
+    // Set up timer to show popup every 5 minutes while in risky zone
+    _riskyZoneTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
+      if (mounted && _safetyData?.status == SafetyStatus.risky && _safetyData?.nearbyUsersCount > 0) {
+        print('⏰ 5-minute check: User still in risky zone, showing popup');
+        _showSafetyConfirmationPopup(_safetyData!);
+      } else {
+        print('⏰ 5-minute check: User no longer in risky zone, stopping timer');
+        _stopRiskyZoneRecurringCheck();
+      }
+    });
+  }
+
+  void _stopRiskyZoneRecurringCheck() {
+    if (_riskyZoneTimer != null) {
+      print('⏰ Stopping 5-minute recurring safety check timer');
+      _riskyZoneTimer?.cancel();
+      _riskyZoneTimer = null;
+    }
   }
 
   void _checkSafetyStatus() {
@@ -236,12 +277,20 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
   @override
   void dispose() {
     _refreshTimer?.cancel();
+    _riskyZoneTimer?.cancel();
     _realtimeChannel?.unsubscribe();
     _geofencingService.stopMonitoring();
     super.dispose();
   }
 
   void _showSafetyConfirmationPopup(SafetyZoneData data) {
+    // Track when popup was shown
+    _lastRiskyPopupTime = DateTime.now();
+    
+    print('🚨 Showing safety confirmation popup');
+    print('   Average distance: ${data.averageDistance.toStringAsFixed(1)}m');
+    print('   Nearby users: ${data.nearbyUsersCount}');
+    
     showDialog(
       context: context,
       barrierDismissible: false, // User must respond
@@ -367,30 +416,32 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
 
   void _handleSafe() {
     print('✅ User confirmed: I\'m safe');
+    
+    // Show when user will be checked again
+    final nextCheckIn = _safetyData?.status == SafetyStatus.risky 
+        ? 'You\'ll be checked again in 5 minutes if still in risky zone.'
+        : 'Stay aware of your surroundings.';
+    
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: const Row(
+        content: Row(
           children: [
-            Icon(Icons.check_circle, color: Colors.white),
-            SizedBox(width: 12),
-            Text('Great! Stay aware of your surroundings.'),
+            const Icon(Icons.check_circle, color: Colors.white),
+            const SizedBox(width: 12),
+            Expanded(child: Text(nextCheckIn)),
           ],
         ),
         backgroundColor: AppTheme.successColor,
-        duration: const Duration(seconds: 3),
+        duration: const Duration(seconds: 4),
       ),
     );
-    
-    // Reset popup flag after 30 seconds
-    Future.delayed(const Duration(seconds: 30), () {
-      if (mounted) {
-        _hasShownRiskyPopup = false;
-      }
-    });
   }
 
   void _handleNotSafe() {
     print('🚨 User needs help!');
+    
+    // Stop recurring checks since we're escalating to emergency
+    _stopRiskyZoneRecurringCheck();
     
     // Show emergency options
     showDialog(
@@ -434,7 +485,10 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
             TextButton(
               onPressed: () {
                 Navigator.of(context).pop();
-                _hasShownRiskyPopup = false;
+                // Restart recurring checks if still in risky zone
+                if (_safetyData?.status == SafetyStatus.risky) {
+                  _startRiskyZoneRecurringCheck();
+                }
               },
               child: const Text('Cancel'),
             ),
@@ -458,12 +512,19 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
 
   void _triggerEmergencyAlert() {
     print('🚨 EMERGENCY ALERT TRIGGERED!');
+    print('   Time: ${DateTime.now()}');
+    print('   Location: ${_currentUser?.latitude}, ${_currentUser?.longitude}');
+    print('   Average distance: ${_safetyData?.averageDistance}m');
+    
+    // Stop recurring checks since emergency is escalated
+    _stopRiskyZoneRecurringCheck();
     
     // TODO: Implement emergency alert logic
     // - Send notifications to nearby users
     // - Alert emergency contacts
     // - Log incident
     // - Start recording audio/location trail
+    // - Contact authorities
     
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -487,8 +548,6 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
         ),
       ),
     );
-    
-    _hasShownRiskyPopup = false;
   }
 
   @override
