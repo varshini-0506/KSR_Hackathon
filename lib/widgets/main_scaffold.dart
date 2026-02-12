@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
+import '../services/user_auth_service.dart';
 
 class MainScaffold extends StatelessWidget {
   final Widget body;
@@ -180,9 +181,13 @@ class MainScaffold extends StatelessWidget {
                   child: const Text('Cancel'),
                 ),
                 ElevatedButton(
-                  onPressed: () {
+                  onPressed: () async {
                     Navigator.pop(context); // Close dialog
-                    context.go('/login');
+                    // Logout user
+                    await UserAuthService().logout();
+                    if (context.mounted) {
+                      context.go('/login');
+                    }
                   },
                   child: const Text('Logout'),
                 ),

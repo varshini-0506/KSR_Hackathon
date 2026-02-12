@@ -2,6 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
 import '../widgets/main_scaffold.dart';
+import '../services/sensor_manager.dart';
+import '../services/supabase_service.dart';
+import '../services/user_auth_service.dart';
+import '../config/supabase_config.dart';
 
 class HomeDashboard extends StatefulWidget {
   const HomeDashboard({super.key});
@@ -14,6 +18,62 @@ class _HomeDashboardState extends State<HomeDashboard> {
   String _safetyStatus = 'Safe'; // Safe, Monitoring, Emergency
   int _nearbyContacts = 3;
   double _closestDistance = 0.5;
+  final SensorManager _sensorManager = SensorManager();
+  bool _sensorCollectionStarted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeSensorCollection();
+    _checkUserLocation();
+  }
+
+  Future<void> _checkUserLocation() async {
+    final authService = UserAuthService();
+    final currentUser = authService.getCurrentUser();
+    if (currentUser != null) {
+      print('Current user: ${currentUser.name} (${currentUser.id})');
+      print('User location: Lat=${currentUser.latitude}, Lon=${currentUser.longitude}');
+    } else {
+      print('No current user found');
+    }
+  }
+
+  Future<void> _initializeSensorCollection() async {
+    if (!SupabaseConfig.isConfigured) {
+      print('Supabase not configured. Please add your credentials in lib/config/supabase_config.dart');
+      return;
+    }
+
+    try {
+      // Initialize Supabase
+      final supabaseService = SupabaseService();
+      await supabaseService.initialize(
+        supabaseUrl: SupabaseConfig.supabaseUrl,
+        supabaseAnonKey: SupabaseConfig.supabaseAnonKey,
+      );
+
+      await _sensorManager.initialize(
+        supabaseUrl: SupabaseConfig.supabaseUrl,
+        supabaseAnonKey: SupabaseConfig.supabaseAnonKey,
+      );
+
+      // Start sensor collection
+      await _sensorManager.startSensorCollection();
+      setState(() {
+        _sensorCollectionStarted = true;
+      });
+      print('Sensor collection started successfully');
+    } catch (e) {
+      print('Error initializing sensor collection: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _sensorManager.stopSensorCollection();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

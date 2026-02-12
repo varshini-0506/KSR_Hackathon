@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 import 'theme/app_theme.dart';
 import 'routes/app_router.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
   // Set preferred orientations

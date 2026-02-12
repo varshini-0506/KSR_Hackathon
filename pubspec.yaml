@@ -15,6 +15,13 @@ dependencies:
   shared_preferences: ^2.2.2
   flutter_svg: ^2.0.9
   intl: ^0.19.0
+  sensors_plus: ^4.0.0
+  geolocator: ^13.0.1
+  sqflite: ^2.3.0
+  path: ^1.8.3
+  supabase_flutter: ^2.5.0
+  uuid: ^4.3.3
+  proximity_sensor: ^1.3.10
 
 dev_dependencies:
   flutter_test:
