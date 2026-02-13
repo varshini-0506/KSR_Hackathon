@@ -31,7 +31,6 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
   // Safety zone data
   SafetyZoneData? _safetyData;
   double _safetyThreshold = 10.0; // 10 meters default
-  SafetyStatus _lastSafetyStatus = SafetyStatus.unknown; // Track state changes
   Timer? _riskyZoneTimer; // Timer for recurring checks in risky zone
 
   @override
@@ -53,42 +52,27 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
   }
 
   void _startSafetyMonitoring() {
-    print('🛡️ Starting safety zone monitoring');
+    print('🛡️ Starting safety monitoring');
     
     _geofencingService.startMonitoring(
       threshold: _safetyThreshold,
       onStatusChanged: (data) {
-        if (mounted) {
-          final previousStatus = _lastSafetyStatus;
-          final currentStatus = data.status;
-          
-          setState(() {
-            _safetyData = data;
-            _lastSafetyStatus = currentStatus;
-          });
-          
-          // Handle state transitions
-          if (previousStatus != currentStatus) {
-            print('🔄 Safety status changed: $previousStatus → $currentStatus');
-            
-            if (currentStatus == SafetyStatus.risky && data.nearbyUsersCount > 0) {
-              // Entered risky zone - show popup immediately
-              _showSafetyConfirmationPopup(data);
-              _startRiskyZoneRecurringCheck();
-            } else if (currentStatus == SafetyStatus.safe) {
-              // Entered safe zone - stop recurring checks
-              _stopRiskyZoneRecurringCheck();
-            }
-          }
-        }
+        if (!mounted) return;
+        
+        setState(() {
+          _safetyData = data;
+        });
       },
       onRiskyZone: (data) {
-        // This is triggered by the service, but we handle it in onStatusChanged
-        print('⚠️ Risky zone callback triggered');
+        if (!mounted) return;
+        print('🚨 RISKY - Showing alert');
+        _showSafetyConfirmationPopup(data);
+        _startRiskyZoneRecurringCheck();
       },
       onSafeZone: (data) {
-        // This is triggered by the service, but we handle it in onStatusChanged
-        print('✅ Safe zone callback triggered');
+        if (!mounted) return;
+        print('✅ SAFE - Stopping alerts');
+        _stopRiskyZoneRecurringCheck();
       },
     );
   }
@@ -99,7 +83,7 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
     
     // Set up timer to show popup every 5 minutes while in risky zone
     _riskyZoneTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
-      if (mounted && _safetyData?.status == SafetyStatus.risky && (_safetyData?.nearbyUsersCount ?? 0) > 0) {
+      if (mounted && _safetyData?.status == SafetyStatus.risky) {
         print('⏰ 5-minute check: User still in risky zone, showing popup');
         _showSafetyConfirmationPopup(_safetyData!);
       } else {
@@ -120,17 +104,13 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
   void _checkSafetyStatus() {
     if (_currentUser == null || _users.isEmpty) return;
     
-    final data = _geofencingService.checkSafetyStatus(
+    // This calls the service which triggers callbacks
+    _geofencingService.checkSafetyStatus(
       currentUser: _currentUser!,
       allUsers: _users,
       threshold: _safetyThreshold,
     );
-    
-    if (mounted) {
-      setState(() {
-        _safetyData = data;
-      });
-    }
+    // Note: Callbacks handle UI update and alerts
   }
 
   Future<void> _loadUsers() async {
@@ -831,11 +811,11 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
     String statusDescription;
 
     if (noOtherUsers) {
-      // Special case: No other users online
-      statusColor = AppTheme.warningColor;
-      statusIcon = Icons.person_off;
-      statusText = '⚠️ No Other Users Online';
-      statusDescription = 'You are alone. Ensure other trusted users are online for safety monitoring.';
+      // No other users → Treat as RISKY
+      statusColor = AppTheme.dangerColor;
+      statusIcon = Icons.warning_amber_rounded;
+      statusText = '⚠️ Risky Zone';
+      statusDescription = 'No other users within ${_safetyData!.threshold.toStringAsFixed(0)}m radius. You are alone.';
     } else if (isSafe) {
       statusColor = AppTheme.successColor;
       statusIcon = Icons.shield_outlined;
@@ -945,32 +925,7 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
                 ),
               ],
             ),
-            if (noOtherUsers) ...[
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: statusColor.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: statusColor.withOpacity(0.3)),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.info_outline, color: statusColor, size: 20),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        'Other users need to be online for safety monitoring to work.',
-                        style: TextStyle(
-                          color: AppTheme.textSecondary,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ] else if (isRisky) ...[
+            if (isRisky || noOtherUsers) ...[
               const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,
