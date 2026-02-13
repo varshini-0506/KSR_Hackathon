@@ -1,20 +1,17 @@
-import 'package:flutter/material.dart';
 import 'dart:math' as math;
+import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 import '../models/user_model.dart';
-import '../theme/app_theme.dart';
 
 class UserMapWidget extends StatefulWidget {
   final List<UserModel> users;
   final UserModel? currentUser;
-  final double mapWidth;
-  final double mapHeight;
 
   const UserMapWidget({
     super.key,
     required this.users,
     this.currentUser,
-    this.mapWidth = 400,
-    this.mapHeight = 400,
   });
 
   @override
@@ -22,308 +19,43 @@ class UserMapWidget extends StatefulWidget {
 }
 
 class _UserMapWidgetState extends State<UserMapWidget> {
+  final MapController _mapController = MapController();
+  bool _hasInitialized = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_hasInitialized) {
+        _centerMapInitial();
+        _hasInitialized = true;
+      }
+    });
+  }
+
   @override
   void didUpdateWidget(UserMapWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Force repaint when users data changes
-    bool hasChanged = false;
-    if (oldWidget.users.length != widget.users.length) {
-      hasChanged = true;
-    } else {
-      for (int i = 0; i < widget.users.length; i++) {
-        final oldUser = oldWidget.users[i];
-        final newUser = widget.users[i];
-        if (oldUser.id != newUser.id ||
-            oldUser.latitude != newUser.latitude ||
-            oldUser.longitude != newUser.longitude ||
-            oldUser.isOnline != newUser.isOnline) {
-          hasChanged = true;
-          break;
-        }
-      }
-    }
-    if (oldWidget.currentUser?.id != widget.currentUser?.id ||
-        oldWidget.currentUser?.latitude != widget.currentUser?.latitude ||
-        oldWidget.currentUser?.longitude != widget.currentUser?.longitude) {
-      hasChanged = true;
-    }
-    if (hasChanged) {
-      print('🔄 Map widget updating: ${widget.users.length} users');
-      print('  Current user location: Lat=${widget.currentUser?.latitude?.toStringAsFixed(6)}, Lon=${widget.currentUser?.longitude?.toStringAsFixed(6)}');
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final users = widget.users;
-    final currentUser = widget.currentUser;
-    final mapWidth = widget.mapWidth;
-    final mapHeight = widget.mapHeight;
-
-    if (users.isEmpty) {
-      return Container(
-        height: mapHeight,
-        decoration: BoxDecoration(
-          color: AppTheme.backgroundColor,
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: const Center(
-          child: Text('No users found'),
-        ),
-      );
-    }
-
-    // Calculate bounds
-    final bounds = _calculateBounds(users);
-    final latRange = bounds['latRange'] as double;
-    final lonRange = bounds['lonRange'] as double;
-    final centerLat = bounds['centerLat'] as double;
-    final centerLon = bounds['centerLon'] as double;
-
-    return Container(
-      height: mapHeight,
-      width: mapWidth,
-      decoration: BoxDecoration(
-        color: AppTheme.backgroundColor,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppTheme.primaryColor.withOpacity(0.2)),
-      ),
-      child: CustomPaint(
-        key: ValueKey('painter_${users.length}_${users.map((u) => '${u.latitude}_${u.longitude}').join('_')}'),
-        painter: UserMapPainter(
-          users: users,
-          currentUserId: currentUser?.id,
-          latRange: latRange,
-          lonRange: lonRange,
-          centerLat: centerLat,
-          centerLon: centerLon,
-        ),
-        child: Stack(
-          children: [
-            // User markers with names
-            ...users.map((user) {
-              if (user.latitude == null || user.longitude == null) {
-                return const SizedBox.shrink();
-              }
-
-              final x = _normalizeLongitude(user.longitude!, centerLon, lonRange);
-              final y = _normalizeLatitude(user.latitude!, centerLat, latRange);
-
-              final isCurrentUser = currentUser?.id == user.id;
-              final isOnline = user.isOnline;
-
-              return Positioned(
-                left: x * mapWidth - 30,
-                top: y * mapHeight - 40,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // User name label
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(4),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.2),
-                            blurRadius: 4,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: Text(
-                        user.name,
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                          color: isCurrentUser
-                              ? AppTheme.primaryColor
-                              : isOnline
-                                  ? AppTheme.successColor
-                                  : AppTheme.textSecondary,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    // User marker icon
-                    GestureDetector(
-                      onTap: () {
-                        // Show user info
-                      },
-                      child: Container(
-                        width: 24,
-                        height: 24,
-                        decoration: BoxDecoration(
-                          color: isCurrentUser
-                              ? AppTheme.primaryColor
-                              : isOnline
-                                  ? AppTheme.successColor
-                                  : AppTheme.textSecondary,
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: Colors.white,
-                            width: 2,
-                          ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.2),
-                              blurRadius: 4,
-                              offset: const Offset(0, 2),
-                            ),
-                          ],
-                        ),
-                        child: Icon(
-                          isCurrentUser ? Icons.person : Icons.person_outline,
-                          size: 12,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            }).toList(),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Map<String, double> _calculateBounds(List<UserModel> users) {
-    final validUsers = users.where((u) => u.latitude != null && u.longitude != null).toList();
     
-    if (validUsers.isEmpty) {
-      return {
-        'latRange': 0.01,
-        'lonRange': 0.01,
-        'centerLat': 0.0,
-        'centerLon': 0.0,
-      };
-    }
-
-    double minLat = validUsers.first.latitude!;
-    double maxLat = validUsers.first.latitude!;
-    double minLon = validUsers.first.longitude!;
-    double maxLon = validUsers.first.longitude!;
-
-    for (var user in validUsers) {
-      if (user.latitude! < minLat) minLat = user.latitude!;
-      if (user.latitude! > maxLat) maxLat = user.latitude!;
-      if (user.longitude! < minLon) minLon = user.longitude!;
-      if (user.longitude! > maxLon) maxLon = user.longitude!;
-    }
-
-    final latRange = (maxLat - minLat).abs();
-    final lonRange = (maxLon - minLon).abs();
-
-    // Add padding
-    final padding = math.max(latRange, lonRange) * 0.2;
-    final paddedLatRange = latRange + padding * 2;
-    final paddedLonRange = lonRange + padding * 2;
-
-    return {
-      'latRange': paddedLatRange == 0 ? 0.01 : paddedLatRange,
-      'lonRange': paddedLonRange == 0 ? 0.01 : paddedLonRange,
-      'centerLat': (minLat + maxLat) / 2,
-      'centerLon': (minLon + maxLon) / 2,
-    };
-  }
-
-  double _normalizeLongitude(double lon, double centerLon, double lonRange) {
-    return ((lon - centerLon) / lonRange) + 0.5;
-  }
-
-  double _normalizeLatitude(double lat, double centerLat, double latRange) {
-    return ((lat - centerLat) / latRange) + 0.5;
-  }
-}
-
-class UserMapPainter extends CustomPainter {
-  final List<UserModel> users;
-  final String? currentUserId;
-  final double latRange;
-  final double lonRange;
-  final double centerLat;
-  final double centerLon;
-  final double mapWidth = 400;
-  final double mapHeight = 400;
-
-  UserMapPainter({
-    required this.users,
-    this.currentUserId,
-    required this.latRange,
-    required this.lonRange,
-    required this.centerLat,
-    required this.centerLon,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final validUsers = users.where((u) => u.latitude != null && u.longitude != null).toList();
+    // DISABLE auto-recentering - let user control the map!
+    // Only recenter on initial load in initState
+    // Markers will update position without moving the map
     
-    if (validUsers.isEmpty) return;
-
-    // Draw connecting lines (network visualization) - connect ALL users to ALL users
-    final paint = Paint()
-      ..color = AppTheme.primaryColor.withOpacity(0.3)
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke;
-
-    // Connect every user to every other user
-    for (int i = 0; i < validUsers.length; i++) {
-      for (int j = i + 1; j < validUsers.length; j++) {
-        final user1 = validUsers[i];
-        final user2 = validUsers[j];
-
-        final x1 = _normalizeLongitude(user1.longitude!, centerLon, lonRange) * size.width;
-        final y1 = _normalizeLatitude(user1.latitude!, centerLat, latRange) * size.height;
-        final x2 = _normalizeLongitude(user2.longitude!, centerLon, lonRange) * size.width;
-        final y2 = _normalizeLatitude(user2.latitude!, centerLat, latRange) * size.height;
-
-        // Draw line connecting all users (no distance restriction)
-        canvas.drawLine(Offset(x1, y1), Offset(x2, y2), paint);
+    // Log for debugging (but don't recenter)
+    if (widget.currentUser != null && oldWidget.currentUser != null) {
+      final oldLat = oldWidget.currentUser?.latitude;
+      final oldLon = oldWidget.currentUser?.longitude;
+      final newLat = widget.currentUser?.latitude;
+      final newLon = widget.currentUser?.longitude;
+      
+      if (oldLat != newLat || oldLon != newLon) {
+        // Just update markers, don't move camera
+        // User has full control of map position
       }
     }
-
-    // Draw safety zone around current user
-    if (currentUserId != null) {
-      final currentUser = validUsers.firstWhere(
-        (u) => u.id == currentUserId,
-        orElse: () => validUsers.first,
-      );
-
-      if (currentUser.latitude != null && currentUser.longitude != null) {
-        final centerX = _normalizeLongitude(currentUser.longitude!, centerLon, lonRange) * size.width;
-        final centerY = _normalizeLatitude(currentUser.latitude!, centerLat, latRange) * size.height;
-
-        final zonePaint = Paint()
-          ..color = AppTheme.successColor.withOpacity(0.1)
-          ..style = PaintingStyle.fill;
-        
-        final zoneBorderPaint = Paint()
-          ..color = AppTheme.successColor
-          ..strokeWidth = 2
-          ..style = PaintingStyle.stroke;
-
-        // Draw safety zone circle (radius based on nearest user or fixed 2km)
-        final radius = _calculateSafetyZoneRadius(currentUser, validUsers, size);
-        canvas.drawCircle(Offset(centerX, centerY), radius, zonePaint);
-        canvas.drawCircle(Offset(centerX, centerY), radius, zoneBorderPaint);
-      }
-    }
-  }
-
-  double _normalizeLongitude(double lon, double centerLon, double lonRange) {
-    return ((lon - centerLon) / lonRange) + 0.5;
-  }
-
-  double _normalizeLatitude(double lat, double centerLat, double latRange) {
-    return ((lat - centerLat) / latRange) + 0.5;
   }
 
   double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
-    // Haversine formula
     const double earthRadius = 6371000; // meters
     final dLat = _toRadians(lat2 - lat1);
     final dLon = _toRadians(lon2 - lon1);
@@ -340,46 +72,275 @@ class UserMapPainter extends CustomPainter {
     return degrees * (math.pi / 180);
   }
 
-  double _calculateSafetyZoneRadius(
-    UserModel currentUser,
-    List<UserModel> allUsers,
-    Size size,
-  ) {
-    // Find nearest user
-    double minDistance = double.infinity;
-    for (var user in allUsers) {
-      if (user.id != currentUser.id && user.latitude != null && user.longitude != null) {
-        final distance = _calculateDistance(
-          currentUser.latitude!,
-          currentUser.longitude!,
-          user.latitude!,
-          user.longitude!,
+  void _centerMapInitial() {
+    if (widget.currentUser?.latitude != null && widget.currentUser?.longitude != null) {
+      final center = LatLng(
+        widget.currentUser!.latitude!,
+        widget.currentUser!.longitude!,
+      );
+      
+      // Calculate bounds to include all online users
+      final onlineUsers = widget.users.where((u) => 
+        u.isOnline && u.latitude != null && u.longitude != null
+      ).toList();
+      
+      if (onlineUsers.length > 1) {
+        // Fit bounds to show all users with comfortable zoom
+        double minLat = onlineUsers.map((u) => u.latitude!).reduce(math.min);
+        double maxLat = onlineUsers.map((u) => u.latitude!).reduce(math.max);
+        double minLng = onlineUsers.map((u) => u.longitude!).reduce(math.min);
+        double maxLng = onlineUsers.map((u) => u.longitude!).reduce(math.max);
+        
+        final bounds = LatLngBounds(
+          LatLng(minLat, minLng),
+          LatLng(maxLat, maxLng),
         );
-        if (distance < minDistance) {
-          minDistance = distance;
-        }
+        
+        _mapController.fitCamera(
+          CameraFit.bounds(
+            bounds: bounds,
+            padding: const EdgeInsets.all(80),
+            maxZoom: 17.0, // Don't zoom in too close
+          ),
+        );
+      } else {
+        // Just center on current user with comfortable zoom
+        _mapController.move(center, 14.5); // Less zoomed in
       }
     }
+  }
 
-    // Convert distance to pixels (approximate)
-    // Assuming 1km = ~100 pixels at this zoom level
-    final radiusInMeters = math.min(minDistance * 0.5, 2000); // Max 2km radius
-    return (radiusInMeters / 1000) * 50; // Scale to pixels
+  void _centerMapSmoothly() {
+    if (widget.currentUser?.latitude != null && widget.currentUser?.longitude != null) {
+      final center = LatLng(
+        widget.currentUser!.latitude!,
+        widget.currentUser!.longitude!,
+      );
+      
+      // Smooth move to new position without changing zoom
+      try {
+        final currentZoom = _mapController.camera.zoom;
+        _mapController.move(center, currentZoom);
+      } catch (e) {
+        // Fallback if camera not initialized
+        _mapController.move(center, 14.5);
+      }
+    }
+  }
+
+  List<Marker> _buildMarkers() {
+    final markers = <Marker>[];
+    
+    // Add current user marker (highlighted)
+    if (widget.currentUser?.latitude != null && widget.currentUser?.longitude != null) {
+      markers.add(
+        Marker(
+          point: LatLng(
+            widget.currentUser!.latitude!,
+            widget.currentUser!.longitude!,
+          ),
+          width: 80,
+          height: 80,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.blue,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Text(
+                  'You',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: Colors.blue,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 3),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.blue.withOpacity(0.5),
+                      blurRadius: 8,
+                      spreadRadius: 2,
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.person,
+                  color: Colors.white,
+                  size: 24,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    
+    // Add other users markers
+    for (var user in widget.users) {
+      if (user.id == widget.currentUser?.id) continue;
+      if (user.latitude == null || user.longitude == null) continue;
+      
+      final isOnline = user.isOnline;
+      final markerColor = isOnline ? Colors.green : Colors.grey;
+      
+      markers.add(
+        Marker(
+          point: LatLng(user.latitude!, user.longitude!),
+          width: 80,
+          height: 80,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: markerColor,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  user.name,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: markerColor,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 2),
+                  boxShadow: [
+                    BoxShadow(
+                      color: markerColor.withOpacity(0.4),
+                      blurRadius: 6,
+                      spreadRadius: 1,
+                    ),
+                  ],
+                ),
+                child: Icon(
+                  isOnline ? Icons.person : Icons.person_outline,
+                  color: Colors.white,
+                  size: 20,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    
+    return markers;
+  }
+
+  List<Polyline> _buildConnections() {
+    final polylines = <Polyline>[];
+    
+    if (widget.currentUser?.latitude == null || widget.currentUser?.longitude == null) {
+      return polylines;
+    }
+    
+    final currentUserPoint = LatLng(
+      widget.currentUser!.latitude!,
+      widget.currentUser!.longitude!,
+    );
+    
+    // Draw connections to online users
+    for (var user in widget.users) {
+      if (user.id == widget.currentUser?.id) continue;
+      if (!user.isOnline) continue;
+      if (user.latitude == null || user.longitude == null) continue;
+      
+      final userPoint = LatLng(user.latitude!, user.longitude!);
+      
+      polylines.add(
+        Polyline(
+          points: [currentUserPoint, userPoint],
+          color: Colors.blue.withOpacity(0.4),
+          strokeWidth: 2,
+          isDotted: true,
+        ),
+      );
+    }
+    
+    return polylines;
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) {
-    if (oldDelegate is UserMapPainter) {
-      // Repaint if users list changed or locations changed
-      if (oldDelegate.users.length != users.length) return true;
-      for (int i = 0; i < users.length; i++) {
-        if (i >= oldDelegate.users.length) return true;
-        if (oldDelegate.users[i].id != users[i].id) return true;
-        if (oldDelegate.users[i].latitude != users[i].latitude) return true;
-        if (oldDelegate.users[i].longitude != users[i].longitude) return true;
-      }
-      return oldDelegate.currentUserId != currentUserId;
-    }
-    return true;
+  Widget build(BuildContext context) {
+    // Default center if no current user
+    final defaultCenter = widget.currentUser?.latitude != null && widget.currentUser?.longitude != null
+        ? LatLng(widget.currentUser!.latitude!, widget.currentUser!.longitude!)
+        : LatLng(11.360053, 77.827360); // Fallback location
+    
+    print('🗺️ Building map with center: ${defaultCenter.latitude}, ${defaultCenter.longitude}');
+    print('🗺️ Total users to display: ${widget.users.length}');
+    
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: FlutterMap(
+        mapController: _mapController,
+        options: MapOptions(
+          initialCenter: defaultCenter,
+          initialZoom: 14.5, // Comfortable starting zoom
+          minZoom: 11.0, // Allow zooming out to see area
+          maxZoom: 18.5, // Allow zooming in for details
+          interactionOptions: const InteractionOptions(
+            flags: InteractiveFlag.all,
+            enableMultiFingerGestureRace: true,
+          ),
+          onMapReady: () {
+            print('✅ Map is ready!');
+            _centerMapInitial();
+          },
+          // No onPositionChanged needed - user has full control always
+        ),
+        children: [
+          // OpenStreetMap tile layer with optimized configuration
+          TileLayer(
+            urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            userAgentPackageName: 'com.example.vigil',
+            subdomains: const ['a', 'b', 'c'],
+            maxZoom: 19,
+            maxNativeZoom: 19,
+            minNativeZoom: 1,
+            tileSize: 256,
+            keepBuffer: 5, // Keep more tiles in memory for smooth zooming
+            panBuffer: 2, // Load tiles ahead while panning
+            retinaMode: false,
+            errorTileCallback: (tile, error, stackTrace) {
+              print('❌ Tile load error at zoom ${tile.coordinates.z}: $error');
+            },
+            tileProvider: NetworkTileProvider(),
+          ),
+          
+          // Connection lines between users
+          PolylineLayer(
+            polylines: _buildConnections(),
+          ),
+          
+          // User markers
+          MarkerLayer(
+            markers: _buildMarkers(),
+          ),
+        ],
+      ),
+    );
   }
 }

@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:flutter_phone_direct_caller/flutter_phone_direct_caller.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../theme/app_theme.dart';
 import '../models/user_model.dart';
 import '../services/user_location_service.dart';
@@ -31,7 +33,6 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
   // Safety zone data
   SafetyZoneData? _safetyData;
   double _safetyThreshold = 10.0; // 10 meters default
-  SafetyStatus _lastSafetyStatus = SafetyStatus.unknown; // Track state changes
   Timer? _riskyZoneTimer; // Timer for recurring checks in risky zone
 
   @override
@@ -41,54 +42,33 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
     _subscribeToUpdates();
     _startSafetyMonitoring();
     
-    // Aggressive refresh for real-time sync (every 1 second)
-    // Note: Supabase Realtime (WebSocket) will trigger most updates instantly
-    // This is just a backup to ensure UI consistency
-    _refreshTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) {
-        _loadUsers();
-        _checkSafetyStatus(); // Check safety on every refresh
-      }
-    });
+    // ✅ REMOVED aggressive 1-second polling - rely on Realtime WebSocket only
+    // Realtime will trigger updates instantly when GPS changes in Supabase
+    // This prevents double-updates and constant re-rendering
   }
 
   void _startSafetyMonitoring() {
-    print('🛡️ Starting safety zone monitoring');
+    print('🛡️ Starting safety monitoring');
     
     _geofencingService.startMonitoring(
       threshold: _safetyThreshold,
       onStatusChanged: (data) {
-        if (mounted) {
-          final previousStatus = _lastSafetyStatus;
-          final currentStatus = data.status;
-          
-          setState(() {
-            _safetyData = data;
-            _lastSafetyStatus = currentStatus;
-          });
-          
-          // Handle state transitions
-          if (previousStatus != currentStatus) {
-            print('🔄 Safety status changed: $previousStatus → $currentStatus');
-            
-            if (currentStatus == SafetyStatus.risky && data.nearbyUsersCount > 0) {
-              // Entered risky zone - show popup immediately
-              _showSafetyConfirmationPopup(data);
-              _startRiskyZoneRecurringCheck();
-            } else if (currentStatus == SafetyStatus.safe) {
-              // Entered safe zone - stop recurring checks
-              _stopRiskyZoneRecurringCheck();
-            }
-          }
-        }
+        if (!mounted) return;
+        
+        setState(() {
+          _safetyData = data;
+        });
       },
       onRiskyZone: (data) {
-        // This is triggered by the service, but we handle it in onStatusChanged
-        print('⚠️ Risky zone callback triggered');
+        if (!mounted) return;
+        print('🚨 RISKY - Showing alert');
+        _showSafetyConfirmationPopup(data);
+        _startRiskyZoneRecurringCheck();
       },
       onSafeZone: (data) {
-        // This is triggered by the service, but we handle it in onStatusChanged
-        print('✅ Safe zone callback triggered');
+        if (!mounted) return;
+        print('✅ SAFE - Stopping alerts');
+        _stopRiskyZoneRecurringCheck();
       },
     );
   }
@@ -99,7 +79,7 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
     
     // Set up timer to show popup every 5 minutes while in risky zone
     _riskyZoneTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
-      if (mounted && _safetyData?.status == SafetyStatus.risky && (_safetyData?.nearbyUsersCount ?? 0) > 0) {
+      if (mounted && _safetyData?.status == SafetyStatus.risky) {
         print('⏰ 5-minute check: User still in risky zone, showing popup');
         _showSafetyConfirmationPopup(_safetyData!);
       } else {
@@ -120,17 +100,13 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
   void _checkSafetyStatus() {
     if (_currentUser == null || _users.isEmpty) return;
     
-    final data = _geofencingService.checkSafetyStatus(
+    // This calls the service which triggers callbacks
+    _geofencingService.checkSafetyStatus(
       currentUser: _currentUser!,
       allUsers: _users,
       threshold: _safetyThreshold,
     );
-    
-    if (mounted) {
-      setState(() {
-        _safetyData = data;
-      });
-    }
+    // Note: Callbacks handle UI update and alerts
   }
 
   Future<void> _loadUsers() async {
@@ -173,35 +149,31 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
         final newLat = currentUserWithLatestData?.latitude;
         final newLon = currentUserWithLatestData?.longitude;
         
-        print('📊 Before setState: Old Lat=$oldLat, Old Lon=$oldLon');
-        print('📊 Before setState: New Lat=$newLat, New Lon=$newLon');
+        // ✅ CHANGE DETECTION: Only setState if location changed significantly (>5 meters)
+        bool shouldUpdate = false;
+        if (oldLat == null || oldLon == null || newLat == null || newLon == null) {
+          shouldUpdate = true; // First load or missing data
+        } else {
+          final distance = _calculateDistanceBetween(oldLat, oldLon, newLat, newLon);
+          shouldUpdate = distance > 5; // Only update if moved more than 5 meters
+          
+          if (!shouldUpdate) {
+            print('⏭️ Skipping setState: Location changed only ${distance.toStringAsFixed(2)}m (< 5m threshold)');
+            return;
+          }
+          print('📊 Location changed ${distance.toStringAsFixed(2)}m - updating UI');
+        }
         
-        // Force rebuild by creating new list and updating state
-        setState(() {
-          _users = List.from(users); // Create new list instance
-          _currentUser = currentUserWithLatestData != null 
-              ? UserModel(
-                  id: currentUserWithLatestData.id,
-                  email: currentUserWithLatestData.email,
-                  phone: currentUserWithLatestData.phone,
-                  name: currentUserWithLatestData.name,
-                  latitude: currentUserWithLatestData.latitude,
-                  longitude: currentUserWithLatestData.longitude,
-                  speed: currentUserWithLatestData.speed,
-                  accuracy: currentUserWithLatestData.accuracy,
-                  lastLocationUpdate: currentUserWithLatestData.lastLocationUpdate,
-                  isOnline: currentUserWithLatestData.isOnline,
-                  sessionId: currentUserWithLatestData.sessionId,
-                  createdAt: currentUserWithLatestData.createdAt,
-                  updatedAt: currentUserWithLatestData.updatedAt,
-                )
-              : null; // Create new instance to force rebuild
-          _updateCounter++; // Increment counter to force rebuild
-        });
-        
-        print('✅ UI state updated with ${users.length} users (update #$_updateCounter)');
-        print('✅ After setState: Current user location: Lat=${_currentUser?.latitude?.toStringAsFixed(6)}, Lon=${_currentUser?.longitude?.toStringAsFixed(6)}');
-        print('✅ Location changed: ${oldLat != newLat || oldLon != newLon}');
+        if (shouldUpdate) {
+          setState(() {
+            _users = users; // Don't create new list - just assign
+            _currentUser = currentUserWithLatestData;
+            _updateCounter++; // Increment counter
+          });
+          
+          print('✅ UI state updated with ${users.length} users (update #$_updateCounter)');
+          print('✅ After setState: Current user location: Lat=${_currentUser?.latitude?.toStringAsFixed(6)}, Lon=${_currentUser?.longitude?.toStringAsFixed(6)}');
+        }
       }
     } catch (e) {
       print('❌ Error loading users: $e');
@@ -236,35 +208,36 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
           final newLat = currentUserWithLatestData?.latitude;
           final newLon = currentUserWithLatestData?.longitude;
           
-          print('📊 Realtime: Old Lat=$oldLat, Old Lon=$oldLon');
-          print('📊 Realtime: New Lat=$newLat, New Lon=$newLon');
+          // ✅ CHANGE DETECTION: Only setState if location changed significantly (>5 meters)
+          bool shouldUpdate = false;
+          if (oldLat == null || oldLon == null || newLat == null || newLon == null) {
+            shouldUpdate = true; // First load or missing data
+          } else {
+            final distance = _calculateDistanceBetween(oldLat, oldLon, newLat, newLon);
+            shouldUpdate = distance > 5; // Only update if moved more than 5 meters
+            
+            if (!shouldUpdate) {
+              print('⏭️ Realtime: Skipping setState - Location changed only ${distance.toStringAsFixed(2)}m (< 5m threshold)');
+              // Still check safety even if we don't update UI
+              _checkSafetyStatus();
+              return;
+            }
+            print('📊 Realtime: Location changed ${distance.toStringAsFixed(2)}m - updating UI');
+          }
           
-          // Force rebuild by creating new instances
-          setState(() {
-            _users = List.from(users); // New list instance
-            _currentUser = currentUserWithLatestData != null
-                ? UserModel(
-                    id: currentUserWithLatestData.id,
-                    email: currentUserWithLatestData.email,
-                    phone: currentUserWithLatestData.phone,
-                    name: currentUserWithLatestData.name,
-                    latitude: currentUserWithLatestData.latitude,
-                    longitude: currentUserWithLatestData.longitude,
-                    speed: currentUserWithLatestData.speed,
-                    accuracy: currentUserWithLatestData.accuracy,
-                    lastLocationUpdate: currentUserWithLatestData.lastLocationUpdate,
-                    isOnline: currentUserWithLatestData.isOnline,
-                    sessionId: currentUserWithLatestData.sessionId,
-                    createdAt: currentUserWithLatestData.createdAt,
-                    updatedAt: currentUserWithLatestData.updatedAt,
-                  )
-                : null; // New instance to force rebuild
-            _updateCounter++; // Increment counter to force rebuild
-          });
-          
-          print('✅ UI updated via realtime: ${users.length} users (update #$_updateCounter)');
-          print('✅ Realtime: After setState - Lat=${_currentUser?.latitude?.toStringAsFixed(6)}, Lon=${_currentUser?.longitude?.toStringAsFixed(6)}');
-          print('✅ Realtime: Location changed: ${oldLat != newLat || oldLon != newLon}');
+          if (shouldUpdate) {
+            setState(() {
+              _users = users; // Don't create new list - just assign
+              _currentUser = currentUserWithLatestData;
+              _updateCounter++;
+            });
+            
+            print('✅ UI updated via realtime: ${users.length} users (update #$_updateCounter)');
+            print('✅ Realtime: After setState - Lat=${_currentUser?.latitude?.toStringAsFixed(6)}, Lon=${_currentUser?.longitude?.toStringAsFixed(6)}');
+            
+            // Check safety after UI update
+            _checkSafetyStatus();
+          }
         } else {
           print('⚠️ Widget not mounted, skipping UI update');
         }
@@ -432,11 +405,87 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
     );
   }
 
-  void _handleNotSafe() {
+  Future<void> _makeEmergencyCall() async {
+    const emergencyNumber = '9361353368'; // Emergency contact number
+    const emergencyName = 'Calling Help';
+    
+    print('📞 Initiating AUTOMATIC emergency call to $emergencyNumber');
+    print('   Contact name: $emergencyName');
+    
+    try {
+      // Check if we have permission for automatic calling
+      PermissionStatus phonePermission = await Permission.phone.status;
+      
+      if (!phonePermission.isGranted) {
+        print('⚠️ Phone permission not granted, requesting...');
+        phonePermission = await Permission.phone.request();
+      }
+      
+      if (phonePermission.isGranted) {
+        // AUTOMATIC CALL - No user interaction needed!
+        print('✅ Phone permission granted - Making AUTOMATIC call');
+        await FlutterPhoneDirectCaller.callNumber(emergencyNumber);
+        print('✅ AUTOMATIC emergency call initiated successfully!');
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Row(
+                children: [
+                  Icon(Icons.phone, color: Colors.white),
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: Text('📞 Emergency call AUTOMATICALLY initiated to Calling Help!'),
+                  ),
+                ],
+              ),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 4),
+            ),
+          );
+        }
+      } else {
+        // Fallback: Open dialer
+        print('⚠️ Phone permission denied - User needs to allow permission');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Row(
+                children: [
+                  Icon(Icons.warning, color: Colors.white),
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: Text('Phone permission needed for automatic calling'),
+                  ),
+                ],
+              ),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      print('❌ Error making emergency call: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  void _handleNotSafe() async {
     print('🚨 User needs help!');
     
     // Stop recurring checks since we're escalating to emergency
     _stopRiskyZoneRecurringCheck();
+    
+    // Make emergency call immediately
+    await _makeEmergencyCall();
     
     // Show emergency options
     showDialog(
@@ -575,13 +624,48 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
                     ],
                   ),
                   const SizedBox(height: 16),
-                  // Map View with Users
-                  UserMapWidget(
-                    key: ValueKey('map_${_updateCounter}_${_users.length}_${_users.map((u) => '${u.latitude?.toStringAsFixed(6)}_${u.longitude?.toStringAsFixed(6)}').join('_')}'),
-                    users: _users,
-                    currentUser: _currentUser,
-                    mapWidth: MediaQuery.of(context).size.width - 48,
-                    mapHeight: 400,
+                  // Map View with Users (Professional OpenStreetMap)
+                  Stack(
+                    children: [
+                      SizedBox(
+                        height: 400,
+                        width: double.infinity,
+                        child: UserMapWidget(
+                          // No key - prevents constant rebuilds
+                          users: _users,
+                          currentUser: _currentUser,
+                        ),
+                      ),
+                      // Recenter button
+                      Positioned(
+                        bottom: 16,
+                        right: 16,
+                        child: FloatingActionButton.small(
+                          onPressed: () {
+                            setState(() {
+                              // Trigger map to recenter
+                              _updateCounter++;
+                            });
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Row(
+                                  children: [
+                                    Icon(Icons.my_location, color: Colors.white),
+                                    SizedBox(width: 12),
+                                    Text('Map centered on your location'),
+                                  ],
+                                ),
+                                backgroundColor: Colors.blue,
+                                duration: Duration(seconds: 2),
+                              ),
+                            );
+                          },
+                          backgroundColor: Colors.white,
+                          elevation: 4,
+                          child: Icon(Icons.my_location, color: AppTheme.primaryColor),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 24),
                   // Safety Status Card (Priority Display)
@@ -831,11 +915,11 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
     String statusDescription;
 
     if (noOtherUsers) {
-      // Special case: No other users online
-      statusColor = AppTheme.warningColor;
-      statusIcon = Icons.person_off;
-      statusText = '⚠️ No Other Users Online';
-      statusDescription = 'You are alone. Ensure other trusted users are online for safety monitoring.';
+      // No other users → Treat as RISKY
+      statusColor = AppTheme.dangerColor;
+      statusIcon = Icons.warning_amber_rounded;
+      statusText = '⚠️ Risky Zone';
+      statusDescription = 'No other users within ${_safetyData!.threshold.toStringAsFixed(0)}m radius. You are alone.';
     } else if (isSafe) {
       statusColor = AppTheme.successColor;
       statusIcon = Icons.shield_outlined;
@@ -945,32 +1029,7 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
                 ),
               ],
             ),
-            if (noOtherUsers) ...[
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: statusColor.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: statusColor.withOpacity(0.3)),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.info_outline, color: statusColor, size: 20),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        'Other users need to be online for safety monitoring to work.',
-                        style: TextStyle(
-                          color: AppTheme.textSecondary,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ] else if (isRisky) ...[
+            if (isRisky || noOtherUsers) ...[
               const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,
@@ -1032,6 +1091,11 @@ class _GeofenceViewPageState extends State<GeofenceViewPage> {
       user.latitude!,
       user.longitude!,
     );
+  }
+
+  // ✅ Helper for calculating distance between two coordinate pairs (returns meters)
+  double _calculateDistanceBetween(double lat1, double lon1, double lat2, double lon2) {
+    return _haversineDistance(lat1, lon1, lat2, lon2) * 1000; // Convert km to meters
   }
 
   double _haversineDistance(double lat1, double lon1, double lat2, double lon2) {

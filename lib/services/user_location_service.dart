@@ -94,8 +94,8 @@ class UserLocationService {
     // This provides instant updates when device moves
     _locationSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.bestForNavigation, // Highest accuracy
-        distanceFilter: 0, // Update on ANY movement (maximum sensitivity)
+        accuracy: LocationAccuracy.high, // Good accuracy without constant drift
+        distanceFilter: 10, // ✅ Only update if moved 10+ meters (reduces GPS drift noise)
         timeLimit: Duration.zero, // No time limit - continuous updates
       ),
     ).listen(
@@ -115,11 +115,11 @@ class UserLocationService {
       },
     );
     
-    // Aggressive backup timer (every 1 second) in case stream misses updates
-    _updateTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+    // Backup timer (every 5 seconds) in case stream misses updates
+    _updateTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
       // Only update if stream hasn't updated recently
       if (_lastUpdateTime == null || 
-          DateTime.now().difference(_lastUpdateTime!) > const Duration(seconds: 2)) {
+          DateTime.now().difference(_lastUpdateTime!) > const Duration(seconds: 8)) {
         await _updateUserLocation(userId);
       }
     });
@@ -143,19 +143,17 @@ class UserLocationService {
         ? DateTime.now().difference(_lastUpdateTime!)
         : const Duration(seconds: 10);
     
-    // Update if moved more than 0.5 meters OR more than 1 second passed OR accuracy improved
-    // Reduced thresholds for faster real-time updates
-    final accuracyImproved = newPosition.accuracy < (_lastPosition!.accuracy - 5);
-    
-    return distance > 0.5 || timeSinceUpdate.inSeconds > 1 || accuracyImproved;
+    // ✅ Only update if moved significantly (>8 meters) OR more than 5 seconds passed
+    // This filters out GPS drift and reduces unnecessary updates
+    return distance > 8 || timeSinceUpdate.inSeconds > 5;
   }
 
   void _startPeriodicUpdates(String userId) {
     _updateTimer?.cancel();
-    _updateTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+    _updateTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
       await _updateUserLocation(userId);
     });
-    print('Fallback periodic updates started (every 2 seconds for real-time sync)');
+    print('Fallback periodic updates started (every 5 seconds for stability)');
   }
 
   /// Push location directly to Supabase (optimized for streaming)
