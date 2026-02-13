@@ -29,25 +29,12 @@ class DynamicGeofencingService {
   factory DynamicGeofencingService() => _instance;
   DynamicGeofencingService._internal();
 
-  // Safety threshold in meters
+  // SIMPLE: 10 meter radius threshold
   static const double DEFAULT_THRESHOLD = 10.0;
-  
-  // GPS accuracy buffer - GPS can have ±5-10m error even when stationary
-  // Add buffer to prevent false alerts from GPS jitter
-  static const double GPS_ACCURACY_BUFFER = 5.0;
-  
-  // Hysteresis: Different thresholds for entering/leaving risky zone
-  // This prevents rapid flapping between safe/risky states
-  static const double ENTER_RISKY_THRESHOLD = 15.0; // Must be 15m+ to enter risky
-  static const double EXIT_RISKY_THRESHOLD = 8.0;   // Must be 8m- to exit risky
 
   Timer? _monitoringTimer;
   SafetyStatus _currentStatus = SafetyStatus.unknown;
   SafetyZoneData? _lastSafetyData;
-  
-  // Debouncing: Require sustained risky state before alerting
-  int _consecutiveRiskyChecks = 0;
-  static const int RISKY_CHECKS_REQUIRED = 3; // Must be risky for 3 checks (3 seconds)
   
   // Callbacks
   Function(SafetyZoneData)? onSafetyStatusChanged;
@@ -80,19 +67,18 @@ class DynamicGeofencingService {
     _monitoringTimer = null;
     _currentStatus = SafetyStatus.unknown;
     _lastSafetyData = null;
-    _consecutiveRiskyChecks = 0;
   }
 
-  /// Calculate safety zone status based on minimum distance to closest user
-  /// NEW LOGIC: User is SAFE if close to AT LEAST ONE user, RISKY only if ALL users are far
+  /// SIMPLE LOGIC: Check if anyone is within 10m radius
+  /// If YES → SAFE, If NO → RISKY
   SafetyZoneData checkSafetyStatus({
     required UserModel currentUser,
     required List<UserModel> allUsers,
     double threshold = DEFAULT_THRESHOLD,
   }) {
-    print('🔍 Checking safety status for ${currentUser.name}...');
+    print('🔍 Safety check for ${currentUser.name}');
 
-    // Filter out current user and offline users
+    // Filter: Get all OTHER online users with valid location
     final otherUsers = allUsers.where((user) => 
       user.id != currentUser.id && 
       user.isOnline &&
@@ -100,10 +86,11 @@ class DynamicGeofencingService {
       user.longitude != null
     ).toList();
 
-    print('📊 Found ${otherUsers.length} other online users to check');
+    print('📊 ${otherUsers.length} other online users');
 
+    // No other users → RISKY (alone)
     if (otherUsers.isEmpty) {
-      // No other users nearby - consider risky
+      print('⚠️ No other users online → RISKY');
       final data = SafetyZoneData(
         status: SafetyStatus.risky,
         averageDistance: double.infinity,
@@ -111,28 +98,26 @@ class DynamicGeofencingService {
         threshold: threshold,
         nearbyUsers: [],
       );
-      
       _updateStatus(data);
       return data;
     }
 
+    // Current user has no location → Unknown
     if (currentUser.latitude == null || currentUser.longitude == null) {
-      // Current user location unknown
-      final data = SafetyZoneData(
+      print('⚠️ No current user location → UNKNOWN');
+      return SafetyZoneData(
         status: SafetyStatus.unknown,
         averageDistance: 0,
         nearbyUsersCount: 0,
         threshold: threshold,
         nearbyUsers: [],
       );
-      
-      return data;
     }
 
-    // Calculate distances to all other users
-    final distances = <double>[];
-    final nearbyUsers = <UserModel>[];
+    // Calculate distances to ALL other users
     double minDistance = double.infinity;
+    final distances = <double>[];
+    final usersWithinRadius = <UserModel>[];
     
     for (var user in otherUsers) {
       final distance = Geolocator.distanceBetween(
@@ -143,74 +128,39 @@ class DynamicGeofencingService {
       );
       
       distances.add(distance);
-      nearbyUsers.add(user);
       
-      // Track minimum distance (closest user)
+      // Track closest user
       if (distance < minDistance) {
         minDistance = distance;
       }
       
-      print('  - Distance to ${user.name}: ${distance.toStringAsFixed(2)}m');
-    }
-
-    // Calculate average distance (for display purposes)
-    final averageDistance = distances.reduce((a, b) => a + b) / distances.length;
-    
-    print('📏 Minimum distance (closest user): ${minDistance.toStringAsFixed(2)}m');
-    print('📏 Average distance to all users: ${averageDistance.toStringAsFixed(2)}m');
-    print('🎯 Base threshold: ${threshold}m');
-
-    // IMPROVED LOGIC with Hysteresis and GPS Accuracy Buffer
-    // Prevents false alerts from GPS jitter and state flapping
-    
-    SafetyStatus newStatus;
-    
-    if (_currentStatus == SafetyStatus.safe || _currentStatus == SafetyStatus.unknown) {
-      // Currently safe: Need to exceed ENTER_RISKY threshold to become risky
-      // This prevents false alerts when GPS jitters around 10m mark
-      if (minDistance >= ENTER_RISKY_THRESHOLD) {
-        newStatus = SafetyStatus.risky;
-        print('⚠️ POTENTIALLY RISKY: Distance ${minDistance.toStringAsFixed(2)}m >= ${ENTER_RISKY_THRESHOLD}m');
-      } else {
-        newStatus = SafetyStatus.safe;
-        print('✅ SAFE: Distance ${minDistance.toStringAsFixed(2)}m < ${ENTER_RISKY_THRESHOLD}m (with buffer)');
+      // Track users within radius
+      if (distance <= threshold) {
+        usersWithinRadius.add(user);
       }
-    } else {
-      // Currently risky: Need to go below EXIT_RISKY threshold to become safe
-      // This prevents rapid flapping when user is at boundary
-      if (minDistance <= EXIT_RISKY_THRESHOLD) {
-        newStatus = SafetyStatus.safe;
-        print('✅ RETURNING TO SAFE: Distance ${minDistance.toStringAsFixed(2)}m <= ${EXIT_RISKY_THRESHOLD}m');
-      } else {
-        newStatus = SafetyStatus.risky;
-        print('⚠️ STILL RISKY: Distance ${minDistance.toStringAsFixed(2)}m > ${EXIT_RISKY_THRESHOLD}m');
-      }
-    }
-    
-    // Debouncing: Require sustained risky state before confirming
-    if (newStatus == SafetyStatus.risky) {
-      _consecutiveRiskyChecks++;
-      print('🔄 Risky check ${_consecutiveRiskyChecks}/$RISKY_CHECKS_REQUIRED');
       
-      // If not enough consecutive checks, keep current status but increment counter
-      if (_consecutiveRiskyChecks < RISKY_CHECKS_REQUIRED && _currentStatus == SafetyStatus.safe) {
-        print('⏳ Waiting for ${RISKY_CHECKS_REQUIRED - _consecutiveRiskyChecks} more checks before alerting');
-        newStatus = SafetyStatus.safe; // Keep safe until confirmed
-      }
+      print('  ${user.name}: ${distance.toStringAsFixed(1)}m');
+    }
+
+    // SIMPLE LOGIC: Anyone within 10m? → SAFE, Nobody? → RISKY
+    final status = usersWithinRadius.isNotEmpty ? SafetyStatus.safe : SafetyStatus.risky;
+    
+    final avgDistance = distances.isNotEmpty 
+        ? distances.reduce((a, b) => a + b) / distances.length 
+        : double.infinity;
+    
+    if (status == SafetyStatus.safe) {
+      print('✅ SAFE - ${usersWithinRadius.length} user(s) within ${threshold}m');
     } else {
-      // Reset counter when safe
-      if (_consecutiveRiskyChecks > 0) {
-        print('🔄 Reset risky counter (was at ${_consecutiveRiskyChecks})');
-      }
-      _consecutiveRiskyChecks = 0;
+      print('⚠️ RISKY - No users within ${threshold}m (closest: ${minDistance.toStringAsFixed(1)}m)');
     }
     
     final data = SafetyZoneData(
-      status: newStatus,
-      averageDistance: averageDistance,
-      nearbyUsersCount: otherUsers.length,
+      status: status,
+      averageDistance: avgDistance,
+      nearbyUsersCount: usersWithinRadius.length,
       threshold: threshold,
-      nearbyUsers: nearbyUsers,
+      nearbyUsers: usersWithinRadius,
     );
 
     _updateStatus(data);
@@ -220,19 +170,23 @@ class DynamicGeofencingService {
   /// Update status and trigger callbacks
   void _updateStatus(SafetyZoneData data) {
     final previousStatus = _currentStatus;
-    _currentStatus = data.status;
+    final newStatus = data.status;
+    
+    _currentStatus = newStatus;
     _lastSafetyData = data;
 
-    // Always notify status changed
+    // Always notify (UI needs to update even if status same)
     onSafetyStatusChanged?.call(data);
 
-    // Notify specific zone changes
-    if (previousStatus != _currentStatus) {
-      if (_currentStatus == SafetyStatus.risky) {
-        print('⚠️ ENTERED RISKY ZONE! Average distance: ${data.averageDistance.toStringAsFixed(2)}m');
+    // Trigger alerts ONLY when status changes
+    if (previousStatus != newStatus) {
+      print('🔄 Status changed: $previousStatus → $newStatus');
+      
+      if (newStatus == SafetyStatus.risky) {
+        print('🚨 RISKY ZONE - Triggering alert');
         onRiskyZoneEntered?.call(data);
-      } else if (_currentStatus == SafetyStatus.safe) {
-        print('✅ ENTERED SAFE ZONE! Average distance: ${data.averageDistance.toStringAsFixed(2)}m');
+      } else if (newStatus == SafetyStatus.safe) {
+        print('✅ SAFE ZONE');
         onSafeZoneEntered?.call(data);
       }
     }
