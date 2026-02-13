@@ -95,7 +95,7 @@ class UserLocationService {
     _locationSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.bestForNavigation, // Highest accuracy
-        distanceFilter: 1, // Update every 1 meter of movement (very sensitive)
+        distanceFilter: 0, // Update on ANY movement (maximum sensitivity)
         timeLimit: Duration.zero, // No time limit - continuous updates
       ),
     ).listen(
@@ -115,11 +115,11 @@ class UserLocationService {
       },
     );
     
-    // Aggressive backup timer (every 2 seconds) in case stream misses updates
-    _updateTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+    // Aggressive backup timer (every 1 second) in case stream misses updates
+    _updateTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
       // Only update if stream hasn't updated recently
       if (_lastUpdateTime == null || 
-          DateTime.now().difference(_lastUpdateTime!) > const Duration(seconds: 3)) {
+          DateTime.now().difference(_lastUpdateTime!) > const Duration(seconds: 2)) {
         await _updateUserLocation(userId);
       }
     });
@@ -143,10 +143,11 @@ class UserLocationService {
         ? DateTime.now().difference(_lastUpdateTime!)
         : const Duration(seconds: 10);
     
-    // Update if moved more than 1 meter OR more than 2 seconds passed OR accuracy improved
+    // Update if moved more than 0.5 meters OR more than 1 second passed OR accuracy improved
+    // Reduced thresholds for faster real-time updates
     final accuracyImproved = newPosition.accuracy < (_lastPosition!.accuracy - 5);
     
-    return distance > 1 || timeSinceUpdate.inSeconds > 2 || accuracyImproved;
+    return distance > 0.5 || timeSinceUpdate.inSeconds > 1 || accuracyImproved;
   }
 
   void _startPeriodicUpdates(String userId) {
@@ -324,7 +325,7 @@ class UserLocationService {
           .eq('id', userId)
           .single();
 
-      return UserModel.fromJson(response as Map<String, dynamic>);
+      return UserModel.fromJson(response);
     } catch (e) {
       print('Error fetching current user: $e');
       return null;

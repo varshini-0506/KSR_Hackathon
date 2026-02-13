@@ -31,10 +31,23 @@ class DynamicGeofencingService {
 
   // Safety threshold in meters
   static const double DEFAULT_THRESHOLD = 10.0;
+  
+  // GPS accuracy buffer - GPS can have ±5-10m error even when stationary
+  // Add buffer to prevent false alerts from GPS jitter
+  static const double GPS_ACCURACY_BUFFER = 5.0;
+  
+  // Hysteresis: Different thresholds for entering/leaving risky zone
+  // This prevents rapid flapping between safe/risky states
+  static const double ENTER_RISKY_THRESHOLD = 15.0; // Must be 15m+ to enter risky
+  static const double EXIT_RISKY_THRESHOLD = 8.0;   // Must be 8m- to exit risky
 
   Timer? _monitoringTimer;
   SafetyStatus _currentStatus = SafetyStatus.unknown;
   SafetyZoneData? _lastSafetyData;
+  
+  // Debouncing: Require sustained risky state before alerting
+  int _consecutiveRiskyChecks = 0;
+  static const int RISKY_CHECKS_REQUIRED = 3; // Must be risky for 3 checks (3 seconds)
   
   // Callbacks
   Function(SafetyZoneData)? onSafetyStatusChanged;
@@ -67,9 +80,11 @@ class DynamicGeofencingService {
     _monitoringTimer = null;
     _currentStatus = SafetyStatus.unknown;
     _lastSafetyData = null;
+    _consecutiveRiskyChecks = 0;
   }
 
-  /// Calculate safety zone status based on average distance to all users
+  /// Calculate safety zone status based on minimum distance to closest user
+  /// NEW LOGIC: User is SAFE if close to AT LEAST ONE user, RISKY only if ALL users are far
   SafetyZoneData checkSafetyStatus({
     required UserModel currentUser,
     required List<UserModel> allUsers,
@@ -117,6 +132,7 @@ class DynamicGeofencingService {
     // Calculate distances to all other users
     final distances = <double>[];
     final nearbyUsers = <UserModel>[];
+    double minDistance = double.infinity;
     
     for (var user in otherUsers) {
       final distance = Geolocator.distanceBetween(
@@ -129,19 +145,68 @@ class DynamicGeofencingService {
       distances.add(distance);
       nearbyUsers.add(user);
       
+      // Track minimum distance (closest user)
+      if (distance < minDistance) {
+        minDistance = distance;
+      }
+      
       print('  - Distance to ${user.name}: ${distance.toStringAsFixed(2)}m');
     }
 
-    // Calculate average distance
+    // Calculate average distance (for display purposes)
     final averageDistance = distances.reduce((a, b) => a + b) / distances.length;
     
-    print('📏 Average distance to all users: ${averageDistance.toStringAsFixed(2)}m (threshold: ${threshold}m)');
+    print('📏 Minimum distance (closest user): ${minDistance.toStringAsFixed(2)}m');
+    print('📏 Average distance to all users: ${averageDistance.toStringAsFixed(2)}m');
+    print('🎯 Base threshold: ${threshold}m');
 
-    // Determine safety status
-    final status = averageDistance < threshold ? SafetyStatus.safe : SafetyStatus.risky;
+    // IMPROVED LOGIC with Hysteresis and GPS Accuracy Buffer
+    // Prevents false alerts from GPS jitter and state flapping
+    
+    SafetyStatus newStatus;
+    
+    if (_currentStatus == SafetyStatus.safe || _currentStatus == SafetyStatus.unknown) {
+      // Currently safe: Need to exceed ENTER_RISKY threshold to become risky
+      // This prevents false alerts when GPS jitters around 10m mark
+      if (minDistance >= ENTER_RISKY_THRESHOLD) {
+        newStatus = SafetyStatus.risky;
+        print('⚠️ POTENTIALLY RISKY: Distance ${minDistance.toStringAsFixed(2)}m >= ${ENTER_RISKY_THRESHOLD}m');
+      } else {
+        newStatus = SafetyStatus.safe;
+        print('✅ SAFE: Distance ${minDistance.toStringAsFixed(2)}m < ${ENTER_RISKY_THRESHOLD}m (with buffer)');
+      }
+    } else {
+      // Currently risky: Need to go below EXIT_RISKY threshold to become safe
+      // This prevents rapid flapping when user is at boundary
+      if (minDistance <= EXIT_RISKY_THRESHOLD) {
+        newStatus = SafetyStatus.safe;
+        print('✅ RETURNING TO SAFE: Distance ${minDistance.toStringAsFixed(2)}m <= ${EXIT_RISKY_THRESHOLD}m');
+      } else {
+        newStatus = SafetyStatus.risky;
+        print('⚠️ STILL RISKY: Distance ${minDistance.toStringAsFixed(2)}m > ${EXIT_RISKY_THRESHOLD}m');
+      }
+    }
+    
+    // Debouncing: Require sustained risky state before confirming
+    if (newStatus == SafetyStatus.risky) {
+      _consecutiveRiskyChecks++;
+      print('🔄 Risky check ${_consecutiveRiskyChecks}/$RISKY_CHECKS_REQUIRED');
+      
+      // If not enough consecutive checks, keep current status but increment counter
+      if (_consecutiveRiskyChecks < RISKY_CHECKS_REQUIRED && _currentStatus == SafetyStatus.safe) {
+        print('⏳ Waiting for ${RISKY_CHECKS_REQUIRED - _consecutiveRiskyChecks} more checks before alerting');
+        newStatus = SafetyStatus.safe; // Keep safe until confirmed
+      }
+    } else {
+      // Reset counter when safe
+      if (_consecutiveRiskyChecks > 0) {
+        print('🔄 Reset risky counter (was at ${_consecutiveRiskyChecks})');
+      }
+      _consecutiveRiskyChecks = 0;
+    }
     
     final data = SafetyZoneData(
-      status: status,
+      status: newStatus,
       averageDistance: averageDistance,
       nearbyUsersCount: otherUsers.length,
       threshold: threshold,

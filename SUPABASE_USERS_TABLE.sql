@@ -34,12 +34,14 @@ $$ language 'plpgsql';
 CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
 FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
--- Insert 4 Default Users
+-- Insert 4 Default Users (All at same location for testing geofencing)
+-- Location: Bangalore, India (Brigade Road area)
+-- When users login, they will start at the same location and can test by moving
 INSERT INTO users (email, phone, name, latitude, longitude, is_online) VALUES
 ('user1@gmail.com', '+911234567890', 'Alice Johnson', 12.9716, 77.5946, false),
-('user2@gmail.com', '+911234567891', 'Bob Smith', 12.9352, 77.6245, false),
-('user3@gmail.com', '+911234567892', 'Charlie Brown', 12.9141, 77.6412, false),
-('user4@gmail.com', '+911234567893', 'Diana Prince', 12.9279, 77.6271, false);
+('user2@gmail.com', '+911234567891', 'Bob Smith', 12.9716, 77.5946, false),
+('user3@gmail.com', '+911234567892', 'Charlie Brown', 12.9716, 77.5946, false),
+('user4@gmail.com', '+911234567893', 'Diana Prince', 12.9716, 77.5946, false);
 
 -- Disable RLS for development (enable later with proper policies)
 ALTER TABLE users DISABLE ROW LEVEL SECURITY;
